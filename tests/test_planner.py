@@ -115,3 +115,30 @@ def test_cli_lists_stations(capsys):
     assert main(["stations", "--as-of", NOV]) == 0
     out = capsys.readouterr().out
     assert "Dhoby Ghaut" in out and "146 stations" in out
+
+
+def test_polish_keeps_book_valid(cross_dataset, tmp_path):
+    from mrt_route.precompute import polish_book
+
+    path, _ = cross_dataset
+    book_path = tmp_path / "book.json"
+    model = get_model("2026-01-01", 2.0, path)
+    precompute_book(model, FAST, book_path, log=lambda *_: None)
+    before = {
+        st: e["per_line"] for st, e in RouteBook(book_path).books[network_fingerprint(model)]["routes"].items()
+    }
+    improved = polish_book(model, FAST, book_path, log=lambda *_: None)
+    assert improved >= 0
+    after = RouteBook(book_path).books[network_fingerprint(model)]["routes"]
+    for st, entry in after.items():
+        for line, e in entry["per_line"].items():
+            assert e["minutes"] <= before[st][line]["minutes"]
+        p = plan_route(
+            st,
+            as_of="2026-01-01",
+            reversal_penalty_min=2.0,
+            data_path=path,
+            settings=FAST,
+            route_book=RouteBook(book_path),
+        )
+        assert p.solver["source"].startswith("route book") and p.summary["all_covered"]

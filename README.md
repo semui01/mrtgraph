@@ -41,11 +41,11 @@ All-stations MRT route from Bedok
 ================================================================
 Network date        : 2026-11-18  (146 stations, 175 platform nodes)
 Model               : directional graph, reversal penalty 3 min
-Total travel time   : 9 h 24 min  (564 min)
+Total travel time   : 9 h 24 min  (563.5 min)
 Stations covered    : 146 / 146
-Start line          : EWL   End station: Tuas Link
-Rides / transfers   : 23 legs, 10 transfers (66 min), 12 reversals (36 min)
-In-train time       : 462 min over 199 stops (54 repeat passes)
+Start line          : EWL   End station: Bayshore
+Rides / transfers   : 20 legs, 9 transfers (58 min), 10 reversals (30 min)
+In-train time       : 475.5 min over 203 stops (58 repeat passes)
 
 Itinerary (clock = cumulative h:mm at the end of each step)
 ----------------------------------------------------------------
@@ -53,12 +53,12 @@ Itinerary (clock = cumulative h:mm at the end of each step)
   0:12  RIDE EWL  Bedok -> Pasir Ris  [4 stops, 11.5 min, +4 new, 5 covered]
                 towards Pasir Ris
                 via Tanah Merah, Simei, Tampines
-  0:14  REVERSE   at Pasir Ris on EWL  [3 min]
+  0:15  REVERSE   at Pasir Ris on EWL  [3 min]
   0:23  RIDE EWL  Pasir Ris -> Tanah Merah  [3 stops, 8.5 min, no new, 5 covered]
   0:28  TRANSFER  at Tanah Merah: EWL -> CGL  [5 min]  (Same-station change to Changi Airport shuttle)
   0:36  RIDE CGL  Tanah Merah -> Changi Airport  [2 stops, 8 min, +2 new, 7 covered]
   ...
-  9:24  FINISH    at Tuas Link - All 146 stations visited
+  9:24  FINISH    at Bayshore - All 146 stations visited
 ```
 
 Useful options:
@@ -140,8 +140,8 @@ from station spacing:
 
 * 1.1 min for dwell and acceleration, plus 0.8 min per km of track, rounded to 0.5 min.
 * Most stops take 2–3 min. Long gaps run up to 4.5 min, such as Khatib–Yio Chu Kang.
-* Line totals match real end-to-end times. For example, Jurong East–Marina South Pier is
-  65.5 min and HarbourFront–Punggol is 32.5 min.
+* End-to-end line times come out at plausible values. For example, Jurong East–Marina South Pier
+  is 65.5 min and HarbourFront–Punggol is 32.5 min.
 
 **Interchange penalties** cover walking plus average waiting:
 
@@ -226,7 +226,8 @@ Each run ends with an exact dynamic program that picks the best node within ever
 station order found.
 
 **Start lines.** Every line at the start station is solved as the first train you take, and the
-fastest is returned. All results are shown in the start-line comparison.
+fastest is returned. Each line that lost is then re-solved once more, warm-started from the
+winning route's station order, so a single unlucky run can't distort the start-line comparison.
 
 ### 5. Optimality certificate (`mrt_route/exact.py`, optional)
 
@@ -242,19 +243,52 @@ bound gives the optimality gap.
 
 * **Bedok, two-layer model:** proven optimal at **528 min (8 h 48 min)**. The GLS portfolio finds
   the same route in 6 s.
-* **Bedok, direction-aware model:** RESULT_DIRECTIONAL
+* **Orchard, two-layer model:** proven optimal at **521 min (8 h 41 min)**. A live 6 s portfolio
+  run finds 523.5 min, 0.5% above, and `--exact` closes the gap in about 3 minutes.
+* **Bedok, direction-aware model:** the 563.5-min route is within **1.5%** of optimal. After
+  20 minutes, CP-SAT's lower bound is 555 min. The larger direction-aware graph is harder to
+  certify, so the gap stays open.
 
 Exact runs take minutes, so they are opt-in (`--exact SECONDS`, or the web app option).
 
 ### 6. Route book (`python -m mrt_route precompute`)
 
 The precompute runs the portfolio for every station and every start line, with 10 s per run, and
-stores each station order. At load time each route is rebuilt from the shortest paths and checked
-against its stored time, so a stale book is ignored automatically.
+stores each station order.
+
+A polish pass (`--polish N`, or `--polish-only`) then re-solves every station and start line,
+warm-started from its neighbouring stations' best orders. Routes from adjacent starts share most
+of their structure, so this cheaply escapes the local optima of individual runs.
+
+At load time each route is rebuilt from the shortest paths and checked against its stored time,
+so a stale book is ignored automatically.
 
 ## Results (default model, 18 Nov 2026 network)
 
-RESULTS_TABLE
+These come from the route book: the best route found from each of the 146 stations, using the
+portfolio plus two polish rounds.
+
+* **Fastest starts are line ends.** Bayshore takes 8 h 48 min (527.5 min); Tuas Link,
+  Punggol Coast, Woodlands North and Bukit Panjang all take 8 h 48–52 min. Starting at a dead end
+  saves one out-and-back trip.
+* **Slowest starts are mid-network.** Upper Changi takes 9 h 30 min (570 min), followed by
+  Tampines East and West, Kent Ridge and Tanah Merah.
+* **Median:** 9 h 10 min. Every route covers 146 / 146 stations.
+
+| Start | Fastest route | First train | Other start lines |
+|---|---|---|---|
+| Bedok | 9 h 24 min (563.5 min) | EWL | — |
+| Orchard | 9 h 10 min (550 min) | NSL | TEL 9 h 18 min |
+| Jurong East | 9 h 14 min (553.5 min) | NSL | EWL 9 h 14 min |
+| Changi Airport | 9 h 14 min (554 min) | CGL | — |
+| HarbourFront | 9 h 9 min (549 min) | NEL | CCL 9 h 16 min |
+| Woodlands North | 8 h 51 min (531 min) | TEL | — |
+| Dhoby Ghaut | 9 h 6 min (545.5 min) | CCL | NSL 9 h 7 min, NEL 9 h 8 min |
+| Tuas Link | 8 h 48 min (528 min) | EWL | — |
+| Punggol Coast | 8 h 51 min (531 min) | NEL | — |
+| Marina South Pier | 9 h 1 min (541 min) | NSL | — |
+| Bukit Panjang | 8 h 52 min (531.5 min) | DTL | — |
+| Bayshore | 8 h 48 min (527.5 min) | TEL | — |
 
 ## Assumptions and limitations
 

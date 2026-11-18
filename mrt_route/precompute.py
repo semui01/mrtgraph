@@ -19,7 +19,7 @@ from .exact import solve_exact
 from .graph import to_minutes
 from .model import RouteModel, get_model
 from .planner import ROUTE_BOOK_PATH, network_fingerprint
-from .solver import SolverSettings, solve_each_start_line, station_order, target_stations
+from .solver import SolveJob, SolverSettings, run_jobs, solve_each_start_line, station_order, target_stations
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -28,9 +28,32 @@ def _load(path: Path) -> dict[str, Any]:
     return {"books": {}}
 
 
+def dumps_book(data: dict[str, Any]) -> str:
+    """JSON with one compact line per station: small, and diffs stay readable."""
+    out = ["{", ' "books": {']
+    books = list(data["books"].items())
+    for bi, (fp, book) in enumerate(books):
+        out.append(f"  {json.dumps(fp)}: {{")
+        for key, value in book.items():
+            if key != "routes":
+                out.append(f"   {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)},")
+        out.append('   "routes": {')
+        routes = sorted(book["routes"].items())
+        for ri, (station, entry) in enumerate(routes):
+            line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+            out.append(
+                f"    {json.dumps(station, ensure_ascii=False)}: {line}" + ("," if ri < len(routes) - 1 else "")
+            )
+        out.append("   }")
+        out.append("  }" + ("," if bi < len(books) - 1 else ""))
+    out.append(" }")
+    out.append("}")
+    return "\n".join(out) + "\n"
+
+
 def _save(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.write_text(dumps_book(data), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -111,6 +134,80 @@ def precompute_book(
     return book
 
 
+def polish_book(
+    model: RouteModel,
+    settings: SolverSettings,
+    path: Path = ROUTE_BOOK_PATH,
+    log: Callable[[str], None] = print,
+) -> int:
+    """Re-solve every (station, start line) warm-started from good station orders nearby.
+
+    Seeds are the best orders of the same station (other start lines) and of adjacent
+    stations: routes from neighbouring starts share most of their structure, so this is a
+    cheap way to escape local optima of individual runs.  Returns the number of improvements.
+    """
+    data = _load(path)
+    book = data["books"].get(network_fingerprint(model))
+    if not book:
+        raise ValueError("No route book for this network configuration; run precompute first")
+    routes = book["routes"]
+    neighbours: dict[str, set[str]] = {s: set() for s in model.network.stations}
+    for seg in model.network.segments:
+        neighbours[seg.a].add(seg.b)
+        neighbours[seg.b].add(seg.a)
+
+    def best_order(station: str) -> list[str]:
+        entry = routes[station]
+        return entry["per_line"][min(entry["per_line"], key=lambda ln: entry["per_line"][ln]["minutes"])]["order"]
+
+    jobs: list[SolveJob] = []
+    for station in sorted(routes):
+        keep = set(target_stations(model, station))
+        seeds = {tuple(best_order(station))}
+        for nb in neighbours[station]:
+            if nb in routes:
+                # neighbour's order, with the neighbour itself visited first when it is a target
+                order = [nb] if nb in keep else []
+                order += [s for s in best_order(nb) if s in keep and s != nb]
+                order += [s for s in sorted(keep) if s not in order]  # stations implied there, not here
+                seeds.add(tuple(order))
+        for line in routes[station]["per_line"]:
+            for seed in seeds:
+                jobs.append(
+                    SolveJob(
+                        model.network.as_of,
+                        model.space.reversal_penalty_min,
+                        model.data_path,
+                        station,
+                        line,
+                        0.3,
+                        False,
+                        settings,
+                        seed,
+                        "seeded from nearby routes + GLS lambda=0.3",
+                    )
+                )
+    log(f"Polishing {len(routes)} stations with {len(jobs)} seeded runs ...")
+    results = run_jobs(model, jobs, settings)
+    improved = 0
+    for job, r in zip(jobs, results):
+        entry = routes[job.start_station]
+        current = entry["per_line"][job.start_line]
+        if r.minutes < current["minutes"] - 1e-9:
+            keep = set(target_stations(model, job.start_station))
+            log(f"  {job.start_station} ({job.start_line}): {current['minutes']:g} -> {r.minutes:g} min")
+            entry["per_line"][job.start_line] = {
+                "minutes": r.minutes,
+                "label": "polish: " + r.label,
+                "order": station_order(model, job.start_station, r.walk, keep),
+            }
+            improved += 1
+        entry["best_line"] = min(entry["per_line"], key=lambda ln: entry["per_line"][ln]["minutes"])
+    _save(path, data)
+    log(f"{improved} improvement(s)")
+    return improved
+
+
 def main_precompute(args) -> int:
     settings = SolverSettings(
         time_limit_s=args.time_limit,
@@ -125,12 +222,18 @@ def main_precompute(args) -> int:
                 f"Route book for {model.network.as_of} ({len(model.network.stations)} stations), "
                 f"reversal penalty {model.space.reversal_penalty_min:g} min -> {args.out}"
             )
-            precompute_book(
-                model,
-                settings,
-                Path(args.out),
-                stations=[model.network.find_station(s).name for s in args.stations] if args.stations else None,
-                exact_time_s=args.exact,
-                resume=not args.no_resume,
-            )
+            if not args.polish_only:
+                precompute_book(
+                    model,
+                    settings,
+                    Path(args.out),
+                    stations=[model.network.find_station(s).name for s in args.stations]
+                    if args.stations
+                    else None,
+                    exact_time_s=args.exact,
+                    resume=not args.no_resume,
+                )
+            for _ in range(args.polish):
+                if polish_book(model, settings, Path(args.out)) == 0:
+                    break
     return 0

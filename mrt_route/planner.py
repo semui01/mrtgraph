@@ -159,7 +159,7 @@ def plan_route(
         )
         if exact.walk is not None and exact.cost is not None and exact.cost < best.cost:
             first_line = model.space.graph.nodes[model.space.nodes[exact.walk[0]]]["line"]
-            best = GTSPResult(
+            improved = GTSPResult(
                 station,
                 first_line,
                 exact.cost,
@@ -169,6 +169,10 @@ def plan_route(
                 exact.status,
                 "CP-SAT exact (improved on GLS)",
             )
+            # the improved route replaces that start line's entry in the comparison
+            per_line_results = [r for r in per_line_results if r.start_line != first_line] + [improved]
+            per_line_results.sort(key=lambda r: (r.cost, lines.index(r.start_line)))
+            best = per_line_results[0]
         optimality = {
             "status": exact.status,
             "proven_optimal": exact.proven_optimal,

@@ -89,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--exact", type=float, default=0.0, metavar="SECONDS")
     p.add_argument("--no-resume", action="store_true", help="recompute stations already in the book")
+    p.add_argument(
+        "--polish",
+        type=int,
+        default=1,
+        metavar="ROUNDS",
+        help="improvement rounds seeding each station from its neighbours' routes (default 1)",
+    )
+    p.add_argument("--polish-only", action="store_true", help="skip solving, only polish the existing book")
     return parser
 
 

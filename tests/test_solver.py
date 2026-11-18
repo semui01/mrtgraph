@@ -65,7 +65,9 @@ def test_each_start_line_is_evaluated():
     best, runs = solve_each_start_line(model, "Jurong East", FAST)
     assert {r.start_line for r in best} == {"NSL", "EWL"}
     assert best[0].cost <= best[1].cost
-    assert len(runs) == 2
+    # one portfolio run per line, then the losing line is re-solved from the winner's order
+    assert len(runs) == 3 and runs[-1].label.startswith("seeded")
+    assert runs[-1].start_line == best[1].start_line
 
 
 def test_hand_checkable_single_line(line_dataset):

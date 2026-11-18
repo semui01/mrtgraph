@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -31,13 +32,18 @@ class Step:
         return asdict(self)
 
 
+def _whole_minutes(minutes: float) -> int:
+    """Round half up (like the web client), not Python's round-half-to-even."""
+    return int(math.floor(minutes + 0.5))
+
+
 def _fmt_clock(minutes: float) -> str:
-    total = int(round(minutes))
+    total = _whole_minutes(minutes)
     return f"{total // 60}:{total % 60:02d}"
 
 
 def format_duration(minutes: float) -> str:
-    total = int(round(minutes))
+    total = _whole_minutes(minutes)
     h, m = divmod(total, 60)
     if h and m:
         return f"{h} h {m} min"

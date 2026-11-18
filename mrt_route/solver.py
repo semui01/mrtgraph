@@ -20,6 +20,8 @@ Formulation
   *portfolio* of lambdas runs in parallel, plus (with reversal penalties) a run warm-started
   from the two-layer solution.  Every run ends with an exact dynamic-programming pass that
   re-picks the best node inside each cluster for the station order found.
+* At an interchange every line is solved as the first train taken; afterwards each line
+  that lost is re-solved once more, warm-started from the winning route's station order.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import os
 import threading
 import time
 from concurrent.futures import Executor, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
 from datetime import date
 
@@ -328,11 +331,28 @@ class SolveJob:
     lam: float
     warm: bool
     settings: SolverSettings
+    seed_order: tuple[str, ...] = ()  # station order to warm-start from (cross-line seeding)
+    label: str = ""
 
 
 def run_job(job: SolveJob) -> GTSPResult:
     """Top-level (picklable) worker entry point; models are cached per process."""
     model = get_model(job.as_of, job.reversal_penalty_min, job.data_path)
+    return _execute(model, job)
+
+
+def _execute(model: RouteModel, job: SolveJob) -> GTSPResult:
+    if job.seed_order:
+        _, seed = best_representatives(model, job.start_station, job.start_line, list(job.seed_order))
+        return solve_gtsp(
+            model,
+            job.start_station,
+            job.start_line,
+            job.settings,
+            lam=job.lam,
+            initial_order=seed,
+            label=job.label or f"seeded GLS lambda={job.lam}",
+        )
     if job.warm:
         return solve_warm_started(model, job.start_station, job.start_line, job.settings, job.lam)
     return solve_gtsp(model, job.start_station, job.start_line, job.settings, lam=job.lam)
@@ -407,20 +427,50 @@ def solve_each_start_line(
     """
     settings = (settings or SolverSettings()).validate()
     lines = list(model.network.stations[start_station].lines)
-    jobs = portfolio_jobs(model, start_station, lines, settings)
-    workers = settings.workers if settings.workers is not None else min(len(jobs), os.cpu_count() or 1)
-    if workers <= 1 or len(jobs) == 1:
-        runs = [
-            solve_warm_started(model, j.start_station, j.start_line, j.settings, j.lam)
-            if j.warm
-            else solve_gtsp(model, j.start_station, j.start_line, j.settings, lam=j.lam)
-            for j in jobs
+    runs = run_jobs(model, portfolio_jobs(model, start_station, lines, settings), settings)
+
+    def best_by_line(results: list[GTSPResult]) -> dict[str, GTSPResult]:
+        best: dict[str, GTSPResult] = {}
+        for r in results:
+            if r.start_line not in best or r.cost < best[r.start_line].cost:
+                best[r.start_line] = r
+        return best
+
+    best = best_by_line(runs)
+    if len(lines) > 1:
+        # Cross-line seeding: re-solve every other start line from the winning route's station
+        # order, so one unlucky line's portfolio cannot distort the start-line comparison.
+        winner = min(best.values(), key=lambda r: r.cost)
+        order = tuple(station_order(model, start_station, winner.walk, set(target_stations(model, start_station))))
+        seeded = [
+            SolveJob(
+                model.network.as_of,
+                model.space.reversal_penalty_min,
+                model_data_path(model),
+                start_station,
+                line,
+                0.3,
+                False,
+                settings,
+                order,
+                "seeded from best start line + GLS lambda=0.3",
+            )
+            for line in lines
+            if line != winner.start_line
         ]
-    else:
-        runs = list(_get_pool(workers).map(run_job, jobs))
-    best: dict[str, GTSPResult] = {}
-    for r in runs:
-        if r.start_line not in best or r.cost < best[r.start_line].cost:
-            best[r.start_line] = r
+        runs += run_jobs(model, seeded, settings)
+        best = best_by_line(runs)
     ranked = sorted(best.values(), key=lambda r: (r.cost, lines.index(r.start_line)))
     return ranked, runs
+
+
+def run_jobs(model: RouteModel, jobs: list[SolveJob], settings: SolverSettings) -> list[GTSPResult]:
+    """Run solve jobs in the process pool (or in-process when ``settings.workers == 1``)."""
+    workers = settings.workers if settings.workers is not None else min(len(jobs), os.cpu_count() or 1)
+    if workers <= 1 or len(jobs) == 1:
+        return [_execute(model, j) for j in jobs]
+    try:
+        return list(_get_pool(workers).map(run_job, jobs))
+    except BrokenProcessPool:  # a worker died (e.g. OOM-killed): rebuild the pool once
+        shutdown_pool()
+        return list(_get_pool(workers).map(run_job, jobs))

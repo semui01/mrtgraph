@@ -611,7 +611,7 @@
     } else {
       body = `<div class="step-kind">Finish</div><div class="step-title">${esc(st.station)}</div><div class="step-sub">${esc(st.note)} in ${fmtHM(st.end_min)}</div>`;
     }
-    return `<li data-i="${i}">${clock}<div>${body}</div></li>`;
+    return `<li data-i="${i}" tabindex="0">${clock}<div>${body}</div></li>`;
   }
 
   function renderItinerary() {
@@ -621,6 +621,13 @@
       if (ev.target.closest("summary")) return;
       const li = ev.target.closest("li");
       if (li) { stopPlay(); setStep(+li.dataset.i, true); }
+    };
+    ol.onkeydown = (ev) => {
+      const li = ev.target.closest("li");
+      if (!li || ev.target !== li) return;
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); stopPlay(); setStep(+li.dataset.i, true); }
+      else if (ev.key === "ArrowDown" && li.nextElementSibling) { ev.preventDefault(); li.nextElementSibling.focus(); }
+      else if (ev.key === "ArrowUp" && li.previousElementSibling) { ev.preventDefault(); li.previousElementSibling.focus(); }
     };
   }
 
