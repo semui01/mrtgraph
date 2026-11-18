@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MRT All-Stations Planner</title>
+  <meta name="description" content="Fastest route that visits every Singapore MRT station, from any starting station.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23fff' stroke='%23D42E12' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" /></svg>
+      <div>
+        <h1>MRT All-Stations Planner</h1>
+        <p class="tagline">The fastest way to visit every Singapore MRT station, from any start</p>
+      </div>
+    </div>
+    <div class="topbar-meta" id="network-meta">Loading network…</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel panel-form" aria-label="Planner">
+      <form id="plan-form" class="card" autocomplete="off">
+        <label for="start" class="field-label">Starting station</label>
+        <div class="search-row">
+          <div class="combo">
+            <input id="start" name="start" type="text" placeholder="Type a station or code, e.g. Bedok, NS24"
+                   role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="start-list" required>
+            <ul id="start-list" class="combo-list" role="listbox" hidden></ul>
+          </div>
+          <button id="solve" type="submit" class="btn-primary">Find route</button>
+        </div>
+        <div class="chips" id="quick-picks" aria-label="Quick picks"></div>
+
+        <details class="options">
+          <summary>Model &amp; solver options</summary>
+          <div class="options-grid">
+            <label for="reversal">Reversal penalty <span class="hint">min to turn back; 0 = pure two-layer graph</span></label>
+            <input id="reversal" type="number" min="0" max="30" step="0.5">
+            <label for="time-limit">Search time per run <span class="hint">seconds, runs execute in parallel</span></label>
+            <input id="time-limit" type="number" min="1" max="60" step="1">
+            <label for="exact">Prove optimality <span class="hint">CP-SAT seconds; 0 = off (slow: minutes)</span></label>
+            <input id="exact" type="number" min="0" max="900" step="30" value="0">
+          </div>
+          <label class="check"><input id="upcoming" type="checkbox"> Include stations opening <span id="upcoming-date">26 Dec 2026</span> (Bedok South, Sungei Bedok, Xilin)</label>
+          <label class="check"><input id="live" type="checkbox"> Re-optimise live (ignore precomputed routes)</label>
+        </details>
+      </form>
+
+      <div id="status" class="status" role="status" aria-live="polite" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <div><strong id="status-title">Optimising…</strong><div id="status-detail" class="status-detail"></div></div>
+      </div>
+      <div id="error" class="error" role="alert" hidden></div>
+    </section>
+
+    <section class="map-panel" aria-label="Network map">
+      <div class="map-wrap">
+        <svg id="map" role="img" aria-label="Singapore MRT network map"></svg>
+        <div class="map-tools">
+          <button type="button" class="btn-icon" id="z-in" aria-label="Zoom in">+</button>
+          <button type="button" class="btn-icon" id="z-out" aria-label="Zoom out">&minus;</button>
+          <button type="button" class="btn-icon" id="z-reset" aria-label="Reset view">&#8634;</button>
+        </div>
+        <div class="map-progress" id="map-progress" hidden></div>
+        <div class="tooltip" id="tooltip" hidden></div>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="card chart-card" id="coverage-card" hidden>
+        <div class="chart-head">
+          <h3>Stations covered over time</h3>
+          <span class="chart-sub">Flat stretches are transfers, turn-backs and repeat rides · click to jump</span>
+        </div>
+        <div class="chart" id="coverage"></div>
+        <div class="chart-tip" id="coverage-tip" hidden></div>
+      </div>
+    </section>
+
+    <section class="panel panel-results" aria-label="Results">
+      <section id="results" hidden>
+        <div class="card">
+          <div class="result-head">
+            <div>
+              <div class="eyebrow">Route from</div>
+              <h2 id="r-title">—</h2>
+            </div>
+            <div class="result-actions">
+              <button type="button" class="btn-ghost" id="copy-text" title="Copy itinerary as text">Copy</button>
+              <button type="button" class="btn-ghost" id="download-json" title="Download full result as JSON">JSON</button>
+            </div>
+          </div>
+          <div class="kpis">
+            <div class="kpi"><div class="kpi-value" id="k-time">—</div><div class="kpi-label">Total travel time</div></div>
+            <div class="kpi"><div class="kpi-value" id="k-stations">—</div><div class="kpi-label">Stations covered</div></div>
+            <div class="kpi"><div class="kpi-value" id="k-transfers">—</div><div class="kpi-label">Transfers</div></div>
+            <div class="kpi"><div class="kpi-value" id="k-reversals">—</div><div class="kpi-label">Reversals</div></div>
+          </div>
+          <dl class="facts">
+            <div><dt>Board first</dt><dd id="f-start">—</dd></div>
+            <div><dt>Finish at</dt><dd id="f-end">—</dd></div>
+            <div><dt>In-train time</dt><dd id="f-train">—</dd></div>
+            <div><dt>Changing &amp; turning</dt><dd id="f-change">—</dd></div>
+          </dl>
+          <p class="note" id="r-note"></p>
+          <div id="per-line" class="per-line"></div>
+        </div>
+
+        <div class="card">
+          <div class="itin-head">
+            <h3>Itinerary</h3>
+            <div class="player" aria-label="Replay route on map">
+              <button type="button" class="btn-icon" id="p-prev" aria-label="Previous step">&#9664;</button>
+              <button type="button" class="btn-icon" id="p-play" aria-label="Play">&#9654;</button>
+              <button type="button" class="btn-icon" id="p-next" aria-label="Next step">&#9654;&#9654;</button>
+            </div>
+          </div>
+          <input id="p-slider" class="slider" type="range" min="0" max="0" value="0" aria-label="Itinerary step">
+          <ol id="itinerary" class="itinerary"></ol>
+        </div>
+      </section>
+
+      <footer class="footnote" id="footnote"></footer>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

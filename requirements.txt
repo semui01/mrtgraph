@@ -1,0 +1,5 @@
+networkx>=3.2
+ortools>=9.10
+numpy>=1.26
+flask>=3.0
+gunicorn>=22.0 ; platform_system != "Windows"
